@@ -1,11 +1,7 @@
-pandas
-
-numpy
-
-scikit-learn
-
-scipy
-
 dash
-
+pandas
+scikit-learn
+scipy
+gunicorn
 plotly
+numpy
