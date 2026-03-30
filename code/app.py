@@ -1,20 +1,13 @@
 # -*- coding: utf-8 -*-
 """
 K-Means Anomaly Detector — Interactive Dashboard (Plotly + Dash)
-Advanced version with:
-- PCA 2D Cluster Visualization
-- Slider for Threshold
-- Dropdown to select dataset
-- Histogram per Cluster
-- Scatter with Cluster + Anomaly coloring
-- Pie chart per Cluster
-- Extended metrics table (Dynamic Update)
+Optimized for Render Free Tier (Memory Constraints)
 """
 import pandas as pd
 import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score, f1_score, silhouette_score
+from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score, f1_score
 from scipy.spatial.distance import cdist
 from sklearn.decomposition import PCA
 import warnings
@@ -32,7 +25,8 @@ TEST21_PATH = r"KDDTest-21.txt"
 
 # ---------------- Helpers ----------------
 def load_df(path):
-    df = pd.read_csv(path, header=None)
+    # تم تحديد nrows=20000 لتقليل استهلاك الذاكرة لتناسب الخطة المجانية (512MB)
+    df = pd.read_csv(path, header=None, nrows=20000)
     num_features = df.shape[1] - 1
     cols = [f'feature_{i}' for i in range(num_features)] + ['label']
     df.columns = cols
@@ -110,21 +104,12 @@ y_train = train_df['Actual'].values
 scaler = StandardScaler()
 X_train_scaled = scaler.fit_transform(X_train)
 
-# Determine best k using silhouette
-ks = list(range(2,7))
-sil_scores = {}
-n_sil_sample = min(10000, X_train_scaled.shape[0])
-sil_sample_idx = np.random.choice(X_train_scaled.shape[0], size=n_sil_sample, replace=False)
-for k in ks:
-    km = KMeans(n_clusters=k, random_state=42, n_init=10).fit(X_train_scaled)
-    try:
-        sil = silhouette_score(X_train_scaled[sil_sample_idx], km.labels_[sil_sample_idx])
-    except:
-        sil = np.nan
-    sil_scores[k]=sil
-best_k = max({k:v for k,v in sil_scores.items() if not np.isnan(v)}, key=lambda x:sil_scores[x])
-kmeans = KMeans(n_clusters=best_k, random_state=42, n_init=20).fit(X_train_scaled)
+# ---------------- KMeans (Optimized for Server) ----------------
+# تم تثبيت قيمة k وتخفيف إعدادات التدريب لتسريع الإقلاع وتجنب استهلاك الذاكرة
+best_k = 5
+kmeans = KMeans(n_clusters=best_k, random_state=42, n_init=5).fit(X_train_scaled)
 centroids = kmeans.cluster_centers_
+
 dists_train = np.min(cdist(X_train_scaled, centroids), axis=1)
 train_df['dist_to_centroid'] = dists_train
 train_df['Cluster'] = kmeans.labels_
@@ -161,6 +146,7 @@ test21_df, _ = compute_distances(test21_df, X_test_scaled, centroids, best_th)
 
 # ---------------- Dash App ----------------
 app = dash.Dash(__name__)
+server = app.server # مهم جداً لسيرفر Gunicorn
 
 # Helper functions for plotting
 def make_hist(df):
@@ -175,7 +161,7 @@ def make_scatter(df, X_pca):
     cluster_colors = ['blue', 'green', 'orange', 'purple', 'brown', 'pink', 'cyan', 'magenta']
     colors = []
     for a,c in zip(df['Anomaly'], df['Cluster']):
-        if a==1:  # Anomaly
+        if a==1:
             colors.append('red')
         else:
             colors.append(cluster_colors[c % len(cluster_colors)])
@@ -209,7 +195,6 @@ def make_metrics_table(df_list, names):
         })
     return pd.DataFrame(metrics_list)
 
-# Initial dummy table format
 metrics_df_init = make_metrics_table([train_df, val_df, test21_df], ['Train','Validation','Test21'])
 
 # ---------------- Layout ----------------
@@ -237,7 +222,7 @@ app.layout = html.Div(style={'padding':'20px','font-family':'Arial'}, children=[
 
     html.H4("Metrics Summary", style={'margin-top':'30px', 'textAlign':'center'}),
     dash_table.DataTable(
-        id='metrics-table', # <-- إضافة الـ ID للجدول هنا
+        id='metrics-table',
         columns=[{"name": i, "id": i} for i in metrics_df_init.columns],
         data=metrics_df_init.to_dict('records'),
         style_cell={'textAlign':'center', 'padding':'5px'},
@@ -252,13 +237,12 @@ app.layout = html.Div(style={'padding':'20px','font-family':'Arial'}, children=[
     [Output('histogram-graph','figure'),
      Output('scatter-pca','figure'),
      Output('pie-anomaly','figure'),
-     Output('metrics-table', 'data')], # <-- مخرج جديد لتحديث بيانات الجدول
+     Output('metrics-table', 'data')],
     [Input('dataset-dropdown','value'),
      Input('threshold-slider','value')]
 )
 def update_dashboard(dataset_name, threshold_percentile):
     
-    # 1. تحديث قيمة الحساسية (Anomaly) لجميع قواعد البيانات بناءً على الـ Slider
     th_train = np.percentile(train_df['dist_to_centroid'], threshold_percentile)
     train_df['Anomaly'] = (train_df['dist_to_centroid'] > th_train).astype(int)
     
@@ -268,14 +252,12 @@ def update_dashboard(dataset_name, threshold_percentile):
     th_test = np.percentile(test21_df['dist_to_centroid'], threshold_percentile)
     test21_df['Anomaly'] = (test21_df['dist_to_centroid'] > th_test).astype(int)
 
-    # 2. إنشاء بيانات الجدول الجديدة
     updated_metrics_df = make_metrics_table(
         [train_df, val_df, test21_df], 
         ['Train', 'Validation', 'Test21']
     )
     table_data = updated_metrics_df.to_dict('records')
 
-    # 3. اختيار البيانات الخاصة بالرسم البياني بناءً على الـ Dropdown
     if dataset_name=='Train':
         df = train_df.copy()
         X_pca = X_train_pca
@@ -289,7 +271,6 @@ def update_dashboard(dataset_name, threshold_percentile):
         X_pca = X_test_pca
         threshold_value = th_test
 
-    # Histogram
     hist_fig = go.Figure()
     hist_fig.add_trace(make_hist(df))
     hist_fig.add_shape({'type':'line','x0':threshold_value,'x1':threshold_value,'y0':0,'y1':df.shape[0],
@@ -297,18 +278,15 @@ def update_dashboard(dataset_name, threshold_percentile):
     hist_fig.update_layout(title=f"Histogram: Distances to Centroid ({dataset_name})",
                            xaxis_title='Distance', yaxis_title='Count')
 
-    # PCA scatter
     scatter_fig = go.Figure()
     scatter_fig.add_trace(make_scatter(df, X_pca))
     scatter_fig.update_layout(title=f"PCA 2D Cluster Visualization ({dataset_name})",
                               xaxis_title='PCA1', yaxis_title='PCA2')
 
-    # Pie
     pie_fig = go.Figure()
     pie_fig.add_trace(make_pie(df))
     pie_fig.update_layout(title=f"Anomaly Proportion ({dataset_name})")
 
-    # إرجاع الرسوم البيانية بالإضافة إلى بيانات الجدول المحدثة
     return hist_fig, scatter_fig, pie_fig, table_data
 
 if __name__ == '__main__':
